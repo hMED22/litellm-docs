@@ -1552,6 +1552,14 @@ AZURE_STORAGE_TENANT_ID="985efd7cxxxxxxxxxx" # The Application Tenant ID to use 
 AZURE_STORAGE_CLIENT_ID="abe66585xxxxxxxxxx" # The Application Client ID to use for Authentication
 AZURE_STORAGE_CLIENT_SECRET="uMS8Qxxxxxxxxxx" # The Application Client Secret to use for Authentication
 
+# Option 3: Use DefaultAzureCredential
+# Leave the AZURE_STORAGE_* service principal variables unset. The Azure identity
+# credential chain supports Workload Identity Federation, managed identity, Azure CLI,
+# and other DefaultAzureCredential methods. Assign Storage Blob Data Contributor to
+# the identity on the storage account, container, or resource group.
+# The chain can be configured with AZURE_CLIENT_ID, AZURE_TENANT_ID,
+# AZURE_FEDERATED_TOKEN_FILE, and AZURE_AUTHORITY_HOST as needed.
+
 # Sovereign Clouds (optional, defaults to the Azure commercial cloud)
 AZURE_STORAGE_ENDPOINT_SUFFIX="core.usgovcloudapi.net" # The storage endpoint suffix to use. Defaults to core.windows.net
 AZURE_AUTHORITY_HOST="https://login.microsoftonline.us" # The Entra ID login authority to use. Only needed with Option 2
