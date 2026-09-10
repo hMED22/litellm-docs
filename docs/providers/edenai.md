@@ -11,7 +11,7 @@ import TabItem from '@theme/TabItem';
 | Provider Route on LiteLLM | `edenai/` |
 | Link to Provider Doc | [Eden AI Documentation ↗](https://www.edenai.co/docs) |
 | Base URL | `https://api.edenai.run/v3` |
-| Supported Operations | [`/chat/completions`](#usage---litellm-python-sdk) |
+| Supported Operations | [`/chat/completions`](#usage---litellm-python-sdk), [`/responses`](#usage---responses-api), [`/v1/messages`](#usage---anthropic-messages-api), [`/embeddings`](#usage---embeddings), [`/audio/transcriptions`](#usage---audio-transcription-and-speech), [`/audio/speech`](#usage---audio-transcription-and-speech), [`/images/generations`](#usage---image-generation) |
 
 <br />
 <br />
@@ -59,7 +59,17 @@ litellm_settings:
 
 ## Cost Tracking
 
-Every Eden AI response reports the request's cost in USD, after any account discount, and LiteLLM records that number as the request's spend instead of a price map estimate. On streams the cost arrives on the final usage chunk. LiteLLM always asks Eden AI for that chunk, and forwards it to your client only when you set `stream_options={"include_usage": True}`, so streaming clients see exactly the OpenAI behavior they expect.
+Every Eden AI response reports the request's cost in USD, after any account discount, and LiteLLM records that number as the request's spend instead of a price map estimate. On chat completion streams the cost arrives on the final usage chunk. LiteLLM always asks Eden AI for that chunk, and forwards it to your client only when you set `stream_options={"include_usage": True}`, so streaming clients see exactly the OpenAI behavior they expect.
+
+| Endpoint | Non-streaming | Streaming |
+|-------|-------|-------|
+| `/chat/completions` | Eden AI's `cost` | Eden AI's `cost`, from the final usage chunk |
+| `/responses` | Eden AI's `cost` | Eden AI's `cost`, from `usage.cost` on the `response.completed` event |
+| `/v1/messages` | Eden AI's `cost` | Price map estimate, which is 0 unless you register the model's prices: Eden AI does not report a cost inside a Messages stream |
+| `/embeddings` | Eden AI's `cost` | Not streamed |
+| `/audio/transcriptions` | Eden AI's `cost` for the JSON formats; price map estimate from the clip's duration for `text`, `srt` and `vtt`, which Eden AI returns without a cost | Not streamed |
+| `/audio/speech` | Eden AI's `cost`, from the `x-edenai-cost` response header | Not streamed |
+| `/images/generations` | Eden AI's `cost` | Not streamed |
 
 ## Usage - LiteLLM Python SDK
 
@@ -124,6 +134,129 @@ response = completion(
 print(response)
 ```
 
+## Usage - Responses API
+
+Eden AI serves OpenAI's Responses API at `/v3/responses` for every model in its catalog, and LiteLLM routes `litellm.responses` and the proxy's `/v1/responses` there natively rather than emulating them over chat completions. Stateful features (`previous_response_id`, `store`, retrieving or deleting a response) only work when the seller natively supports the Responses API, which today means the OpenAI models; other sellers answer statelessly.
+
+```python showLineNumbers title="Eden AI Responses API"
+import os
+import litellm
+
+os.environ["EDENAI_API_KEY"] = ""  # your Eden AI API key
+
+response = litellm.responses(
+    model="edenai/openai/gpt-mini-latest",
+    input="Hello, how are you?",
+    max_output_tokens=200,
+)
+
+print(response.output_text)
+
+stream = litellm.responses(
+    model="edenai/anthropic/claude-sonnet-latest",
+    input="Write a short story about AI",
+    stream=True,
+)
+
+for event in stream:
+    print(event)
+```
+
+`fallbacks` and `routing` go through `extra_body` here too.
+
+## Usage - Anthropic Messages API
+
+Eden AI serves Anthropic's Messages API at `/v3/v1/messages` for every model in its catalog, OpenAI and Google models included, and LiteLLM forwards `litellm.anthropic.messages` calls and the proxy's `/v1/messages` there untranslated, so `system` blocks with `cache_control`, `thinking` and tool results reach Eden AI exactly as your client sent them. Eden AI's `fallbacks` and `routing` fields cannot be sent on this route.
+
+```python showLineNumbers title="Eden AI Anthropic Messages API"
+import os
+import litellm
+
+os.environ["EDENAI_API_KEY"] = ""  # your Eden AI API key
+
+response = await litellm.anthropic.messages.acreate(
+    model="edenai/anthropic/claude-sonnet-latest",
+    max_tokens=200,
+    messages=[{"role": "user", "content": "Hello, how are you?"}],
+)
+
+print(response["content"][0]["text"])
+```
+
+## Usage - Embeddings
+
+Eden AI serves OpenAI's embeddings API at `/v3/embeddings` for every embedding model in its catalog (OpenAI, Google, Cohere, Mistral, Amazon and more). `dimensions`, `encoding_format` and `user` go through as-is; Eden AI's own fields such as `metadata` go through `extra_body`.
+
+```python showLineNumbers title="Eden AI Embeddings"
+import os
+import litellm
+
+os.environ["EDENAI_API_KEY"] = ""  # your Eden AI API key
+
+response = litellm.embedding(
+    model="edenai/openai/text-embedding-3-small",
+    input=["Hello, how are you?", "Fine, thanks"],
+    dimensions=256,
+)
+
+print(len(response.data[0]["embedding"]))
+print(response._hidden_params["response_cost"])  # the cost Eden AI reported
+```
+
+## Usage - Audio (transcription and speech)
+
+Eden AI serves OpenAI's speech-to-text API at `/v3/audio/transcriptions` and text-to-speech API at `/v3/audio/speech`. Transcription takes the usual multipart upload plus `language`, `prompt`, `response_format`, `temperature` and `timestamp_granularities`; speech takes `voice`, `response_format`, `speed` and `instructions`. Both report Eden AI's cost: transcription in the body, speech in the `x-edenai-cost` response header since the body is the audio itself.
+
+```python showLineNumbers title="Eden AI Audio"
+import os
+import litellm
+
+os.environ["EDENAI_API_KEY"] = ""  # your Eden AI API key
+
+speech = litellm.speech(
+    model="edenai/openai/tts-1",
+    input="Hello, how are you?",
+    voice="alloy",
+    response_format="mp3",
+)
+speech.stream_to_file("hello.mp3")
+
+with open("hello.mp3", "rb") as audio:
+    transcript = litellm.transcription(
+        model="edenai/openai/whisper-1",
+        file=audio,
+        language="en",
+    )
+
+print(transcript.text)
+```
+
+## Usage - Image Generation
+
+Eden AI serves OpenAI's image generation API at `/v3/images/generations` for every image model in its catalog (OpenAI, Google, Amazon, Stability and more). Images come back as `b64_json` or a hosted `url` depending on the seller, with Eden AI's cost on the response.
+
+```python showLineNumbers title="Eden AI Image Generation"
+import base64
+import os
+import litellm
+
+os.environ["EDENAI_API_KEY"] = ""  # your Eden AI API key
+
+response = litellm.image_generation(
+    model="edenai/openai/gpt-image-1-mini",
+    prompt="A watercolor lighthouse at dawn",
+    size="1024x1024",
+    quality="low",
+)
+
+image = response.data[0]
+if image.b64_json:
+    with open("lighthouse.png", "wb") as f:
+        f.write(base64.b64decode(image.b64_json))
+else:
+    print(image.url)
+```
+
 ## Usage - LiteLLM Proxy Server
 
 ```yaml showLineNumbers title="config.yaml"
@@ -141,6 +274,22 @@ model_list:
       model: edenai/vertex/gemini-3.7-flash
       api_key: os.environ/EDENAI_API_KEY
       api_base: https://api.eu.edenai.run/v3
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: edenai/openai/text-embedding-3-small
+      api_key: os.environ/EDENAI_API_KEY
+  - model_name: whisper-1
+    litellm_params:
+      model: edenai/openai/whisper-1
+      api_key: os.environ/EDENAI_API_KEY
+  - model_name: tts-1
+    litellm_params:
+      model: edenai/openai/tts-1
+      api_key: os.environ/EDENAI_API_KEY
+  - model_name: gpt-image-1-mini
+    litellm_params:
+      model: edenai/openai/gpt-image-1-mini
+      api_key: os.environ/EDENAI_API_KEY
 ```
 
 ```bash showLineNumbers title="Start LiteLLM Proxy"
@@ -203,6 +352,55 @@ curl http://localhost:4000/v1/chat/completions \
 </Tabs>
 
 The proxy's `x-litellm-response-cost` response header and the spend logs carry the cost Eden AI reported for the request.
+
+The same deployments serve `/v1/responses` and `/v1/messages`:
+
+```bash showLineNumbers title="Eden AI via Proxy - Responses API"
+curl http://localhost:4000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  -d '{
+    "model": "gpt-mini-latest",
+    "input": "Hello, how are you?"
+  }'
+```
+
+```bash showLineNumbers title="Eden AI via Proxy - Anthropic Messages API"
+curl http://localhost:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-proxy-api-key" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "Hello, how are you?"}]
+  }'
+```
+
+Embeddings, audio and images work the same way, on the OpenAI routes:
+
+```bash showLineNumbers title="Eden AI via Proxy - Embeddings, Audio, Images"
+curl http://localhost:4000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  -d '{"model": "text-embedding-3-small", "input": "Hello, how are you?"}'
+
+curl http://localhost:4000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  -d '{"model": "tts-1", "input": "Hello, how are you?", "voice": "alloy"}' \
+  --output hello.mp3
+
+curl http://localhost:4000/v1/audio/transcriptions \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  -F model=whisper-1 \
+  -F file=@hello.mp3
+
+curl http://localhost:4000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  -d '{"model": "gpt-image-1-mini", "prompt": "A watercolor lighthouse at dawn", "size": "1024x1024", "quality": "low"}'
+```
 
 ## Supported OpenAI Parameters
 
