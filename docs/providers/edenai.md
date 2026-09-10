@@ -11,7 +11,7 @@ import TabItem from '@theme/TabItem';
 | Provider Route on LiteLLM | `edenai/` |
 | Link to Provider Doc | [Eden AI Documentation ↗](https://www.edenai.co/docs) |
 | Base URL | `https://api.edenai.run/v3` |
-| Supported Operations | [`/chat/completions`](#usage---litellm-python-sdk), [`/responses`](#usage---responses-api), [`/v1/messages`](#usage---anthropic-messages-api), [`/embeddings`](#usage---embeddings), [`/audio/transcriptions`](#usage---audio-transcription-and-speech), [`/audio/speech`](#usage---audio-transcription-and-speech), [`/images/generations`](#usage---image-generation) |
+| Supported Operations | [`/chat/completions`](#usage---litellm-python-sdk), [`/responses`](#usage---responses-api), [`/v1/messages`](#usage---anthropic-messages-api), [`/embeddings`](#usage---embeddings), [`/audio/transcriptions`](#usage---audio-transcription-and-speech), [`/audio/speech`](#usage---audio-transcription-and-speech), [`/images/generations`](#usage---image-generation), [`/videos`](#usage---video-generation) |
 
 <br />
 <br />
@@ -70,6 +70,7 @@ Every Eden AI response reports the request's cost in USD, after any account disc
 | `/audio/transcriptions` | Eden AI's `cost` for the JSON formats; price map estimate from the clip's duration for `text`, `srt` and `vtt`, which Eden AI returns without a cost | Not streamed |
 | `/audio/speech` | Eden AI's `cost`, from the `x-edenai-cost` response header | Not streamed |
 | `/images/generations` | Eden AI's `cost` | Not streamed |
+| `/videos` | 0 on the create call, which is what Eden AI reports while the job is queued; the settled cost appears on the job's status once it completes, as `usage.provider_reported_cost_usd`. Register the model's per-second price to bill an estimate on the create call instead | Not streamed |
 
 ## Usage - LiteLLM Python SDK
 
@@ -257,6 +258,33 @@ else:
     print(image.url)
 ```
 
+## Usage - Video Generation
+
+Eden AI serves OpenAI's video API at `/v3/videos` for every video model in its catalog (OpenAI, Google, Amazon, MiniMax, Pixverse and more). A job is created, polled and downloaded through LiteLLM's video functions; the id LiteLLM returns routes the later calls back to Eden AI on its own. `seconds` and `size` go through as-is, a reference image goes through `input_reference` as a file or as `{"image_url": ...}` / `{"file_id": ...}`, and Eden AI's own `seed`, `provider_params`, `webhook_receiver` and `user_webhook_parameters` pass through for Eden AI to validate. OpenAI's `characters` and `user` are forwarded as well, and Eden AI answers with a 422 for them until it supports them.
+
+```python showLineNumbers title="Eden AI Video Generation"
+import os
+import time
+import litellm
+
+os.environ["EDENAI_API_KEY"] = ""  # your Eden AI API key
+
+job = litellm.video_generation(
+    model="edenai/pruna/p-video",
+    prompt="A red ball rolling across a wooden table",
+    seconds="4",
+    size="1280x720",
+)
+
+while job.status not in ("completed", "failed"):
+    time.sleep(5)
+    job = litellm.video_status(video_id=job.id)
+
+print(job.status, job.usage)  # usage carries Eden AI's settled cost as provider_reported_cost_usd
+with open("ball.mp4", "wb") as f:
+    f.write(litellm.video_content(video_id=job.id))
+```
+
 ## Usage - LiteLLM Proxy Server
 
 ```yaml showLineNumbers title="config.yaml"
@@ -289,6 +317,10 @@ model_list:
   - model_name: gpt-image-1-mini
     litellm_params:
       model: edenai/openai/gpt-image-1-mini
+      api_key: os.environ/EDENAI_API_KEY
+  - model_name: p-video
+    litellm_params:
+      model: edenai/pruna/p-video
       api_key: os.environ/EDENAI_API_KEY
 ```
 
@@ -400,6 +432,22 @@ curl http://localhost:4000/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-proxy-api-key" \
   -d '{"model": "gpt-image-1-mini", "prompt": "A watercolor lighthouse at dawn", "size": "1024x1024", "quality": "low"}'
+```
+
+Video jobs use the OpenAI video routes: create on `/v1/videos`, poll `/v1/videos/{id}` until `status` is `completed`, then download `/v1/videos/{id}/content`:
+
+```bash showLineNumbers title="Eden AI via Proxy - Videos"
+curl http://localhost:4000/v1/videos \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  -d '{"model": "p-video", "prompt": "A red ball rolling across a wooden table", "seconds": "4", "size": "1280x720"}'
+
+curl http://localhost:4000/v1/videos/<id from the create response> \
+  -H "Authorization: Bearer your-proxy-api-key"
+
+curl http://localhost:4000/v1/videos/<id from the create response>/content \
+  -H "Authorization: Bearer your-proxy-api-key" \
+  --output ball.mp4
 ```
 
 ## Supported OpenAI Parameters
